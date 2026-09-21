@@ -6,6 +6,10 @@ _default:
 run:
     @cargo run -p course-signin
 
+# 运行 CLI（参数透传，示例: just cli query --username 2025xxx）
+cli *ARGS:
+    @cargo run -p course-signin-cli -- {{ARGS}}
+
 # 检查代码能否通过编译（不产出可执行文件）
 check:
     @cargo check --workspace

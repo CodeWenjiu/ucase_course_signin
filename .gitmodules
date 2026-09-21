@@ -1,0 +1,3 @@
+[submodule "UCAS-Course-Sign-in"]
+	path = UCAS-Course-Sign-in
+	url = https://github.com/lccipher/UCAS-Course-Sign-in
