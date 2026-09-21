@@ -1,0 +1,23 @@
+# 列出所有可用的 recipe
+_default:
+    @just --list
+
+# 运行程序
+run:
+    @cargo run -p course-signin
+
+# 检查代码能否通过编译（不产出可执行文件）
+check:
+    @cargo check --workspace
+
+# 格式化代码
+fmt:
+    @cargo fmt --all
+
+# 运行测试
+test:
+    @cargo test --workspace
+
+# 清理构建产物
+clean:
+    @cargo clean
