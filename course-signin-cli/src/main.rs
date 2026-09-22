@@ -168,31 +168,12 @@ fn build_rows(courses: &[Course]) -> Vec<CourseRow> {
         .map(|(i, c)| CourseRow {
             index: i + 1,
             course_name: c.course_name.clone(),
-            class_time: format!(
-                "{} ~ {}",
-                time_only(&c.class_begin_time),
-                time_only(&c.class_end_time)
-            ),
+            class_time: c.class_time_range(),
             teacher_name: c.teacher_name.clone(),
-            sign_status: sign_status_label(&c.sign_status),
+            sign_status: c.sign_status_label(),
             id: c.id.clone(),
         })
         .collect()
-}
-
-/// 从上游时间串 `yyyy-MM-dd HH:mm:ss` 提取 `HH:MM`。
-fn time_only(datetime: &str) -> String {
-    let time = datetime.rsplit(' ').next().unwrap_or(datetime);
-    time.chars().take(5).collect()
-}
-
-/// 把上游签到状态数值转成可读文字：`1`→已签到，`0`→未签到。
-fn sign_status_label(status: &str) -> String {
-    match status {
-        "1" => "已签到".to_string(),
-        "0" => "未签到".to_string(),
-        other => format!("未知({other})"),
-    }
 }
 
 #[cfg(test)]
@@ -247,14 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn sign_status_label_maps_values() {
-        assert_eq!(sign_status_label("1"), "已签到");
-        assert_eq!(sign_status_label("0"), "未签到");
-        assert_eq!(sign_status_label("2"), "未知(2)");
-        assert_eq!(sign_status_label(""), "未知()");
-    }
-
-    #[test]
     fn course_table_contains_status_labels() {
         let courses = vec![Course {
             id: "1222807".into(),
@@ -278,11 +251,20 @@ mod tests {
     }
 
     #[test]
-    fn time_only_extracts_hh_mm() {
-        assert_eq!(time_only("2026-09-21 18:30:00"), "18:30");
-        assert_eq!(time_only("2026-09-21 21:00:00"), "21:00");
-        // 异常输入兜底
-        assert_eq!(time_only("无空格日期"), "无空格日期");
-        assert_eq!(time_only(""), "");
+    fn class_time_range_drops_date_and_seconds() {
+        let courses = vec![Course {
+            id: "1222807".into(),
+            uuid: "CADD27F17ACC44EDAF00000000000001".into(),
+            course_name: "面向对象程序设计—C++".into(),
+            teacher_name: "刘立祥".into(),
+            week_day: "周一".into(),
+            class_begin_time: "2026-09-21 18:30:00".into(),
+            class_end_time: "2026-09-21 21:00:00".into(),
+            sign_status: "0".into(),
+        }];
+
+        let table = Table::new(build_rows(&courses)).to_string();
+        assert!(table.contains("18:30 ~ 21:00"));
+        assert!(table.contains("未签到"));
     }
 }

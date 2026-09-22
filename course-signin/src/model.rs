@@ -42,9 +42,74 @@ pub struct SignResult {
     pub stu_sign_status: String,
 }
 
+impl Course {
+    /// 上课时间范围字符串（`HH:MM ~ HH:MM`）。
+    pub fn class_time_range(&self) -> String {
+        format!(
+            "{} ~ {}",
+            Self::time_only(&self.class_begin_time),
+            Self::time_only(&self.class_end_time),
+        )
+    }
+
+    /// 签到状态可读文字：`1`→已签到，`0`→未签到。
+    pub fn sign_status_label(&self) -> String {
+        match self.sign_status.as_str() {
+            "1" => "已签到".to_string(),
+            "0" => "未签到".to_string(),
+            other => format!("未知({other})"),
+        }
+    }
+
+    /// 从上游时间串 `yyyy-MM-dd HH:mm:ss` 提取 `HH:MM`。
+    fn time_only(datetime: &str) -> String {
+        let time = datetime.rsplit(' ').next().unwrap_or(datetime);
+        time.chars().take(5).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample() -> Course {
+        Course {
+            id: "1222807".into(),
+            uuid: "CADD27F17ACC44EDAF00000000000001".into(),
+            course_name: "面向对象程序设计—C++".into(),
+            teacher_name: "刘立祥".into(),
+            week_day: "周一".into(),
+            class_begin_time: "2026-09-21 18:30:00".into(),
+            class_end_time: "2026-09-21 21:00:00".into(),
+            sign_status: "1".into(),
+        }
+    }
+
+    #[test]
+    fn class_time_range_drops_date_and_seconds() {
+        let c = sample();
+        assert_eq!(c.class_time_range(), "18:30 ~ 21:00");
+    }
+
+    #[test]
+    fn sign_status_label_maps_values() {
+        let mut c = sample();
+        assert_eq!(c.sign_status_label(), "已签到");
+        c.sign_status = "0".into();
+        assert_eq!(c.sign_status_label(), "未签到");
+        c.sign_status = "2".into();
+        assert_eq!(c.sign_status_label(), "未知(2)");
+        c.sign_status = String::new();
+        assert_eq!(c.sign_status_label(), "未知()");
+    }
+
+    #[test]
+    fn class_time_range_handles_abnormal_input() {
+        let mut c = sample();
+        c.class_begin_time = "无空格日期".into();
+        c.class_end_time = String::new();
+        assert_eq!(c.class_time_range(), "无空格日期 ~ ");
+    }
 
     #[test]
     fn parses_course_list_from_upstream() {

@@ -1,0 +1,15 @@
+[package]
+name = "course-signin-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+crate-macro.workspace = true
+crossterm.workspace = true
+course-signin.workspace = true
+ratatui.workspace = true
+tokio.workspace = true

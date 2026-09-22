@@ -3,6 +3,7 @@ members = [
     "crate_macro",
     "course-signin",
     "course-signin-cli",
+    "course-signin-tui",
 ]
 resolver = "3"
 
@@ -22,3 +23,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tabled = { version = "0.22", features = ["derive"] }
+ratatui = { version = "0.30", features = ["crossterm"] }
+crossterm = "0.29"
