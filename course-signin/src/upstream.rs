@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::header::{CONTENT_TYPE, USER_AGENT};
 use serde::Deserialize;
 
@@ -30,8 +30,7 @@ const SCHEDULE_PATH: &str = "/app/course/get_stu_course_sched.action";
 const SIGN_PATH: &str = "/app/course/stu_scan_sign.action";
 
 /// 上游登录请求体中的验证 URL 模板（保持与官方 App 一致）。
-const VERIFICATION_URL_TEMPLATE: &str =
-    "http://iclass.ucas.edu.cn:88/ve/webservices/mobileCheck.shtml?method=mobileLogin&username=${0}&password=${1}&lx=${2}";
+const VERIFICATION_URL_TEMPLATE: &str = "http://iclass.ucas.edu.cn:88/ve/webservices/mobileCheck.shtml?method=mobileLogin&username=${0}&password=${1}&lx=${2}";
 
 /// iclass 上游客户端。
 #[derive(Debug, Clone)]
@@ -56,11 +55,7 @@ impl Client {
         username: impl Into<String>,
         password: impl Into<String>,
     ) -> Result<Self> {
-        Self::build(
-            base_url,
-            Some(username.into()),
-            Some(password.into()),
-        )
+        Self::build(base_url, Some(username.into()), Some(password.into()))
     }
 
     /// 使用默认上游地址且携带凭据。
@@ -123,9 +118,7 @@ impl Client {
             return Err(anyhow!("登录失败：STATUS={}", resp.status));
         }
 
-        let result = resp
-            .result
-            .ok_or_else(|| anyhow!("登录响应缺少 result"))?;
+        let result = resp.result.ok_or_else(|| anyhow!("登录响应缺少 result"))?;
         let session_id = result
             .session_id
             .filter(|s| s.len() == 32)
@@ -252,14 +245,10 @@ impl Client {
     }
 }
 
-/// 生成 0..1_000_000 的随机数。
+/// 生成 0..1_000_000 的随机数（用于构造防缓存的随机查询参数）。
 fn rand_id() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    (nanos as u64) % 1_000_000
+    use rand::Rng;
+    rand::thread_rng().gen_range(0..1_000_000)
 }
 
 /// URL 编码（空格 → %20）。
@@ -339,7 +328,10 @@ mod tests {
         assert_eq!(resp.status, "0");
         let result = resp.result.expect("缺少 result");
         assert_eq!(result.id, "20250001");
-        assert_eq!(result.session_id.as_deref(), Some("AABBCCDDEEFF00112233445566778899"));
+        assert_eq!(
+            result.session_id.as_deref(),
+            Some("AABBCCDDEEFF00112233445566778899")
+        );
     }
 
     #[test]

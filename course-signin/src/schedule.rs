@@ -5,13 +5,22 @@ use chrono::{Duration, NaiveDateTime};
 use crate::model::Course;
 use crate::upstream::SIGN_TIMESTAMP_BUFFER_MS;
 
-/// 签到窗口在课程开始前提前打开的时间（与参考项目 page.tsx 的 signWindow 一致）。
-pub const SIGN_WINDOW_LEAD_MINUTES: i64 = 30;
+/// 签到窗口最早开启：上课前 [`SIGN_WINDOW_MAX_LEAD_MINUTES`] 分钟。
+/// 首签尝试随机落在窗口区间内，避免卡点抢签与无谓长时间重试。
+pub const SIGN_WINDOW_MAX_LEAD_MINUTES: i64 = 5;
+/// 签到窗口最晚开启：上课前 [`SIGN_WINDOW_MIN_LEAD_MINUTES`] 分钟。
+pub const SIGN_WINDOW_MIN_LEAD_MINUTES: i64 = 1;
 /// 签到窗口内重试间隔。
 pub const SIGN_RETRY_INTERVAL: Duration = Duration::seconds(60);
 /// 每日维护时刻（跨天刷新课表），凌晨 00:05。
 pub const MAINTENANCE_HOUR: u32 = 0;
 pub const MAINTENANCE_MINUTE: u32 = 5;
+
+/// 生成随机的签到提前量（1..=5 分钟）。
+fn random_lead_minutes() -> i64 {
+    use rand::Rng;
+    rand::thread_rng().gen_range(SIGN_WINDOW_MIN_LEAD_MINUTES..=SIGN_WINDOW_MAX_LEAD_MINUTES)
+}
 
 /// 单个课程签到任务的完整时间线。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +28,7 @@ pub struct CourseTimeline {
     /// 课程原始 ID（courseSchedId）。
     pub course_id: String,
     pub course_name: String,
-    /// 签到窗口开启时刻：上课前 [`SIGN_WINDOW_LEAD_MINUTES`] 分钟。
+    /// 签到窗口开启时刻：上课前 1~5 分钟内随机（防卡点抢签）。
     pub window_open: NaiveDateTime,
     /// 上课开始时刻。
     pub class_begin: NaiveDateTime,
@@ -84,6 +93,7 @@ impl EventKind {
 
 impl Timeline {
     /// 从当天课表构建时间线。所有时间解析失败（格式异常）的课程会被跳过。
+    /// 签到窗口点随机落在上课前 1~5 分钟内。
     pub fn from_courses(courses: &[Course]) -> Self {
         let mut list: Vec<CourseTimeline> = courses
             .iter()
@@ -93,7 +103,7 @@ impl Timeline {
                 Some(CourseTimeline {
                     course_id: c.id.clone(),
                     course_name: c.course_name.clone(),
-                    window_open: class_begin - Duration::minutes(SIGN_WINDOW_LEAD_MINUTES),
+                    window_open: class_begin - Duration::minutes(random_lead_minutes()),
                     class_begin,
                     class_end,
                 })
@@ -212,8 +222,11 @@ mod tests {
             Timeline::from_courses(&[course("1", "2026-09-21 18:30:00", "2026-09-21 21:00:00")]);
         assert_eq!(timeline.courses.len(), 1);
         let c = &timeline.courses[0];
-        assert_eq!(c.window_open, dt("2026-09-21 18:00:00"), "窗口提前 30 分钟");
-        assert_eq!(c.class_begin, dt("2026-09-21 18:30:00"));
+        let begin = dt("2026-09-21 18:30:00");
+        // 窗口在课前 1~5 分钟随机
+        assert!(c.window_open >= begin - Duration::minutes(SIGN_WINDOW_MAX_LEAD_MINUTES));
+        assert!(c.window_open <= begin - Duration::minutes(SIGN_WINDOW_MIN_LEAD_MINUTES));
+        assert_eq!(c.class_begin, begin);
         assert_eq!(c.class_end, dt("2026-09-21 21:00:00"));
     }
 
@@ -231,10 +244,16 @@ mod tests {
             course("1", "2026-09-21 18:30:00", "2026-09-21 21:00:00"),
             course("2", "2026-09-21 10:00:00", "2026-09-21 12:00:00"),
         ]);
-        // 09:00 时，最近的应是课程 2 的窗口开（10:00 - 30min = 09:30）
+        // 09:00 时，最近应是课程 2 的窗口开（10:00 前 1~5 分钟随机）
         let wake = timeline.next_wakeup(dt("2026-09-21 09:00:00"));
-        assert_eq!(wake.at, dt("2026-09-21 09:30:00"));
-        assert_eq!(wake.delay, Duration::minutes(30));
+        let begin2 = dt("2026-09-21 10:00:00");
+        assert!(
+            wake.at >= begin2 - Duration::minutes(SIGN_WINDOW_MAX_LEAD_MINUTES)
+                && wake.at <= begin2 - Duration::minutes(SIGN_WINDOW_MIN_LEAD_MINUTES),
+            "窗口应在课前 1~5 分钟，实际 {}",
+            wake.at
+        );
+        assert!(wake.delay >= Duration::minutes(55) && wake.delay <= Duration::minutes(59));
     }
 
     #[test]
@@ -294,14 +313,18 @@ mod tests {
             .sign_window_hint(dt("2026-09-21 18:40:00"))
             .expect("应命中窗口");
         assert_eq!(hint.course_name, "课程1");
-        assert_eq!(hint.window_open, dt("2026-09-21 18:00:00"));
+        // 窗口开在 18:25~18:29 随机（课前 1~5 分钟）
+        assert!(hint.window_open >= dt("2026-09-21 18:25:00"));
+        assert!(hint.window_open <= dt("2026-09-21 18:29:00"));
         assert_eq!(hint.class_end, dt("2026-09-21 21:00:00"));
 
         // 两节课之间：报告下一门课的窗口
         let hint = timeline
             .sign_window_hint(dt("2026-09-21 12:30:00"))
             .expect("应报告下一窗口");
-        assert_eq!(hint.window_open, dt("2026-09-21 18:00:00"));
+        let begin1 = dt("2026-09-21 18:30:00");
+        assert!(hint.window_open >= begin1 - Duration::minutes(SIGN_WINDOW_MAX_LEAD_MINUTES));
+        assert!(hint.window_open <= begin1 - Duration::minutes(SIGN_WINDOW_MIN_LEAD_MINUTES));
 
         // 全部完结：None
         assert!(

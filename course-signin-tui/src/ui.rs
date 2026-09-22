@@ -198,7 +198,7 @@ mod tests {
         assert!(text.contains("18:30~21:00"));
         assert!(text.contains("已签到"));
         assert!(text.contains("签到窗口"), "顶栏应显示签到窗口");
-        assert!(text.contains("18:00~21:00"), "应显示窗口时段");
+        assert!(text.contains("~21:00"), "应显示窗口截止时段");
     }
 
     #[test]

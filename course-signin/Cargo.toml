@@ -8,6 +8,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 crate-macro.workspace = true
+rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use chrono::Local;
 use clap::Parser;
 use course_signin::config::DEFAULT_PASSWORD;
@@ -34,7 +34,9 @@ struct Args {
     password: String,
 }
 
-#[tokio::main]
+/// 单线程 runtime：程序是长睡眠 + 低频异步请求型负载，
+/// 多线程 worker（默认 = CPU 核数）只会白白占用线程栈内存。
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -53,6 +55,14 @@ async fn main() -> Result<()> {
     app.spawn_refresh();
 
     let mut terminal = ratatui::init();
+    // 启动时全量清屏一次，避免残留启动前的终端内容（之后走 diff 增量渲染）。
+    // 不用 Terminal::clear()：它会先查询并等待终端光标位置应答，可能阻塞。
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+    )
+    .context("启动清屏失败")?;
     // 先渲染一帧（如“正在刷新课表”），避免启动时黑屏等待
     terminal.draw(|frame| ui::draw(frame, &app))?;
     let result = run(&mut terminal, &mut app, rx).await;

@@ -253,7 +253,7 @@ impl App {
                     .unwrap_or("未知课程");
                 self.spawn_sign_attempt_with(
                     idx,
-                    format!("〔{name}〕签到窗口开启（提前 30 分钟），自动签到中 ..."),
+                    format!("〔{name}〕签到窗口开启（课前 1~5 分钟随机），尝试签到中 ..."),
                 );
             }
             EventKind::ClassBegin(idx) => {
@@ -502,16 +502,19 @@ mod tests {
         let (mut app, _) = make_app();
         app.apply(RefreshMsg::Ok(vec![sample()])); // 18:30 的课，窗口 18:00
 
-        // 17:00 时下一个唤醒点是 18:00 的窗口开
+        // 17:00 时下一个唤醒点是窗口开（18:25~18:29 随机）
         let now = chrono::NaiveDateTime::parse_from_str("2026-09-21 17:00:00", "%Y-%m-%d %H:%M:%S")
             .expect("合法时间");
         app.compute_next_wakeup(now);
-        assert!(app.next_wakeup().expect("应有唤醒点").contains("18:00:00"));
+        assert!(
+            app.next_wakeup().expect("应有唤醒点").contains("18:2"),
+            "窗口应落在 18:25~18:29"
+        );
         assert!(app.wakeup_due(now).is_none(), "未到点不应触发");
 
-        // 到 18:00 触发窗口开启事件
+        // 到 18:35（窗口已开后）触发窗口开启事件
         let due = app
-            .wakeup_due(now + chrono::Duration::minutes(60))
+            .wakeup_due(now + chrono::Duration::minutes(95))
             .expect("到点应触发");
         app.handle_wakeup(due);
         assert!(app.status_text.contains("签到窗口开启"));

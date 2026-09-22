@@ -12,6 +12,10 @@ cli *ARGS:
 
 # 运行 TUI 常驻进程（示例: just tui --username 2025xxx）
 tui *ARGS:
+    @cargo run -p course-signin-tui -- {{ARGS}}
+
+# 运行 TUI（release 构建，全天候常驻推荐，资源占用更低）
+tui-release *ARGS:
     @cargo run --release -p course-signin-tui -- {{ARGS}}
 
 # 检查代码能否通过编译（不产出可执行文件）
