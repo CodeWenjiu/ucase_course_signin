@@ -7,6 +7,9 @@ use course_signin::upstream::Client;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+/// 课表刷新失败后的自动重试间隔（仅当天尚未成功时）。
+const REFRESH_RETRY_INTERVAL: chrono::Duration = chrono::Duration::minutes(5);
+
 /// 后台刷新任务回传的消息。
 pub enum RefreshMsg {
     /// 刷新成功，携带最新课表。
@@ -76,6 +79,10 @@ pub struct App {
     retry_at: Option<NaiveDateTime>,
     /// 重试对应的课程索引。
     retry_course: Option<usize>,
+    /// 课表刷新失败后的重试时刻（仅在当天尚未成功拉取过课表时安排）。
+    refresh_retry_at: Option<NaiveDateTime>,
+    /// 当天是否已成功拉取过课表。
+    daily_success: bool,
     /// 每门课的签到过程注解（覆盖表格状态列）。
     sign_notes: HashMap<usize, String>,
     client: Client,
@@ -106,6 +113,8 @@ impl App {
             pending: None,
             retry_at: None,
             retry_course: None,
+            refresh_retry_at: None,
+            daily_success: false,
             sign_notes: HashMap::new(),
             client,
             tx,
@@ -132,7 +141,7 @@ impl App {
         self.next_wakeup = at;
     }
 
-    /// 计算并保存下一个唤醒点（合并时间线事件与签到重试）；`now` 为本地当前时刻。
+    /// 计算并保存下一个唤醒点（合并时间线事件、签到重试与刷新重试）；`now` 为本地当前时刻。
     pub fn compute_next_wakeup(&mut self, now: NaiveDateTime) {
         if self.pending.is_none() {
             let timeline_wake = self.timeline.next_wakeup(now);
@@ -144,7 +153,14 @@ impl App {
                 },
                 _ => timeline_wake,
             };
-            self.pending = Some(candidate);
+            self.pending = match self.refresh_retry_at {
+                Some(at) if at < candidate.at => Some(Wakeup {
+                    at,
+                    kind: EventKind::RefreshRetry,
+                    delay: at.signed_duration_since(now),
+                }),
+                _ => Some(candidate),
+            };
         }
         if let Some(w) = &self.pending {
             self.next_wakeup = Some(format!(
@@ -242,7 +258,11 @@ impl App {
         match wakeup.kind {
             EventKind::Maintenance => {
                 self.set_date(Local::now().format("%Y%m%d").to_string());
+                // 新的一天：重置“当日已成功”标记，失败会自动重试
+                self.daily_success = false;
+                self.refresh_retry_at = None;
                 self.spawn_refresh_with("每日维护：更新日期，拉取当天课表".to_string());
+                crate::log::log_event(&format!("maintenance date={}", self.date));
             }
             EventKind::WindowOpen(idx) => {
                 let name = self
@@ -289,6 +309,10 @@ impl App {
                 self.status_text = format!("〔{course}〕签到未成功，60 秒后重试 ...");
                 self.spawn_sign_attempt(idx);
             }
+            EventKind::RefreshRetry => {
+                self.refresh_retry_at = None;
+                self.spawn_refresh_with("课表刷新失败自动重试 ...".to_string());
+            }
         }
     }
 
@@ -308,10 +332,12 @@ impl App {
     }
 
     /// 带着原因启动后台刷新（原因会显示在状态栏）。
+    /// 刷新前强制同步日期为当前本地日期，避免跨天后查询旧日期。
     pub fn spawn_refresh_with(&mut self, reason: String) {
         if self.refresh_running {
             return;
         }
+        self.date = Local::now().format("%Y%m%d").to_string();
         self.refresh_running = true;
         self.phase = SchedulerPhase::Running;
         self.status_text = reason;
@@ -349,15 +375,26 @@ impl App {
         self.refresh_running = false;
         match msg {
             RefreshMsg::Ok(courses) => {
-                self.last_count = courses.len();
+                let total = courses.len();
+                self.last_count = total;
                 self.courses = courses;
                 self.timeline = Timeline::from_courses(&self.courses);
                 self.pending = None; // 课程变化 → 重新计算唤醒点
+                self.daily_success = true;
+                self.refresh_retry_at = None;
                 self.last_updated = Some(Local::now().format("%H:%M:%S").to_string());
-                self.status_text = format!("刷新成功：{} 门课", self.last_count);
+                self.status_text = format!("刷新成功：{total} 门课（{date}）", date = self.date);
+                crate::log::log_event(&format!("refresh ok date={} total={}", self.date, total));
             }
             RefreshMsg::Err(msg) => {
-                self.status_text = format!("刷新失败：{msg}");
+                self.status_text = format!("刷新失败：{msg}（沿用上次课表）");
+                crate::log::log_event(&format!("refresh err date={}: {msg}", self.date));
+                // 当天尚未成功时，安排 5 分钟后的自动重试（覆盖凌晨接口未就绪/瞬时故障）
+                if !self.daily_success {
+                    self.refresh_retry_at =
+                        Some(Local::now().naive_local() + REFRESH_RETRY_INTERVAL);
+                    self.status_text.push_str("，5 分钟后自动重试");
+                }
             }
             RefreshMsg::Sign(msg) => self.apply_sign(msg),
         }
@@ -537,5 +574,38 @@ mod tests {
             chrono::Local::now().format("%Y%m%d").to_string(),
             "日期应更新为当天"
         );
+    }
+
+    #[test]
+    fn refresh_error_schedules_retry_when_no_success_yet() {
+        let (mut app, _) = make_app();
+        app.apply(RefreshMsg::Err("上游超时".into()));
+        assert!(
+            app.refresh_retry_at.is_some(),
+            "当日尚未成功时失败应安排重试"
+        );
+        assert!(app.status_text.contains("自动重试"));
+    }
+
+    #[test]
+    fn refresh_error_keeps_courses_and_no_retry_after_success() {
+        let (mut app, _) = make_app();
+        app.apply(RefreshMsg::Ok(vec![sample()]));
+        app.apply(RefreshMsg::Err("又一次失败".into()));
+        assert_eq!(app.courses.len(), 1, "失败保留已有课表");
+        assert!(app.refresh_retry_at.is_none(), "已成功过则不再安排重试");
+        assert!(app.status_text.contains("沿用上次课表"));
+    }
+
+    #[test]
+    fn refresh_success_clears_retry_and_sets_daily_flag() {
+        let (mut app, _) = make_app();
+        app.apply(RefreshMsg::Err("超时".into()));
+        assert!(app.refresh_retry_at.is_some());
+
+        app.apply(RefreshMsg::Ok(vec![sample()]));
+        assert!(app.refresh_retry_at.is_none());
+        assert!(app.daily_success);
+        assert!(app.status_text.contains("刷新成功"));
     }
 }

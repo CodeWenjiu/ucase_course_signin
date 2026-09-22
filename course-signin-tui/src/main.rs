@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::app::App;
 
-crate_macro::mod_pub!(app, ui);
+crate_macro::mod_pub!(app, log, ui);
 
 /// 键盘事件线程轮询间隔。
 const KEYBOARD_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -38,6 +38,13 @@ struct Args {
 /// 多线程 worker（默认 = CPU 核数）只会白白占用线程栈内存。
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    // 任何 panic 前先恢复终端（raw mode / alternate screen / 光标）
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        default_hook(info);
+    }));
+
     let args = Args::parse();
 
     let username = args
@@ -71,13 +78,14 @@ async fn main() -> Result<()> {
 }
 
 /// 键盘事件转发线程 → mpsc channel，避免阻塞事件循环。
-fn spawn_keyboard_thread() -> mpsc::UnboundedReceiver<crossterm::event::KeyEvent> {
+/// 转发全部事件（按键 + Resize），由主循环分发。
+fn spawn_input_thread() -> mpsc::UnboundedReceiver<crossterm::event::Event> {
     let (tx, rx) = mpsc::unbounded_channel();
     std::thread::spawn(move || {
         loop {
             if event::poll(KEYBOARD_POLL_INTERVAL).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.kind == KeyEventKind::Press && tx.send(key).is_err() {
+                if let Ok(ev) = event::read() {
+                    if tx.send(ev).is_err() {
                         break;
                     }
                 }
@@ -93,7 +101,7 @@ async fn run(
     app: &mut App,
     mut rx: mpsc::Receiver<app::RefreshMsg>,
 ) -> Result<()> {
-    let mut keys = spawn_keyboard_thread();
+    let mut events = spawn_input_thread();
 
     loop {
         let now = Local::now().naive_local();
@@ -115,21 +123,28 @@ async fn run(
             _ = tokio::time::sleep(sleep_time) => {
                 // 唤醒：重新计算（包括跨天维护事件）
             }
-            Some(key) = keys.recv() => {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('r') => {
-                        app.invalidate_wakeup();
-                        app.spawn_refresh();
+            Some(ev) = events.recv() => {
+                match ev {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                            KeyCode::Char('r') => {
+                                app.invalidate_wakeup();
+                                app.spawn_refresh();
+                            }
+                            KeyCode::Char('a') => {
+                                app.auto_refresh = !app.auto_refresh;
+                                app.status_text = if app.auto_refresh {
+                                    "自动调度已开启".to_string()
+                                } else {
+                                    "自动调度已暂停（按 a 恢复）".to_string()
+                                };
+                            }
+                            _ => {}
+                        }
                     }
-                    KeyCode::Char('a') => {
-                        app.auto_refresh = !app.auto_refresh;
-                        app.status_text = if app.auto_refresh {
-                            "自动调度已开启".to_string()
-                        } else {
-                            "自动调度已暂停（按 a 恢复）".to_string()
-                        };
-                    }
+                    // 终端尺寸变化：下面的 autoresize + draw 会按新尺寸全量重绘
+                    Event::Resize(_, _) => {}
                     _ => {}
                 }
             }
@@ -137,9 +152,14 @@ async fn run(
                 // 后台任务结果（刷新/签到）到达：立刻落地并重绘
                 app.apply(msg);
             }
+            // Ctrl+C 优雅退出（走 terminal 恢复流程）
+            _ = tokio::signal::ctrl_c() => {
+                return Ok(());
+            }
         }
 
-        // 渲染
+        // 以最新终端尺寸重绘（ioctl 查询，无阻塞；尺寸变化时全量重绘）
+        terminal.autoresize()?;
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if app.quit {

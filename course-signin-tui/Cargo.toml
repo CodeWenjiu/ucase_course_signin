@@ -12,4 +12,5 @@ crate-macro.workspace = true
 crossterm.workspace = true
 course-signin.workspace = true
 ratatui.workspace = true
+serde_json.workspace = true
 tokio.workspace = true

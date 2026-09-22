@@ -65,6 +65,8 @@ pub enum EventKind {
     ClassEnd(usize),
     /// 签到窗口内的重试（签到失败后 60s 再试）。
     SignRetry(usize),
+    /// 课表刷新失败后的自动重试。
+    RefreshRetry,
 }
 
 /// 下一个需要唤醒的事件。
@@ -87,6 +89,7 @@ impl EventKind {
             EventKind::ClassBegin(idx) => format!("课程 {} 开始", idx + 1),
             EventKind::ClassEnd(idx) => format!("课程 {} 结束", idx + 1),
             EventKind::SignRetry(idx) => format!("课程 {} 签到重试", idx + 1),
+            EventKind::RefreshRetry => "课表刷新重试".to_string(),
         }
     }
 }
