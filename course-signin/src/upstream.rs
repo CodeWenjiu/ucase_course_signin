@@ -179,11 +179,15 @@ impl Client {
             .await
             .context("课表接口返回非 JSON")?;
 
-        if resp.status != "0" {
-            return Err(anyhow!("课表查询失败：STATUS={}", resp.status));
+        match resp.status.as_str() {
+            // 0：有课表数据
+            "0" => Ok(resp.result.unwrap_or_default()),
+            // 2：当天无课表（上游语义），视为合法的空课表
+            "2" => Ok(Vec::new()),
+            other => Err(anyhow!(
+                "课表查询失败：STATUS={other}（已知值：0=有课，2=当天无课）"
+            )),
         }
-
-        Ok(resp.result.unwrap_or_default())
     }
 
     /// 直接签到。
@@ -319,6 +323,22 @@ mod tests {
         let resp: TimestampResponse = serde_json::from_str(json).expect("解析失败");
         assert_eq!(resp.status, "0");
         assert_eq!(resp.timestamp, 1770000000000);
+    }
+
+    #[test]
+    fn schedule_status_2_means_no_courses() {
+        let json = r#"{"STATUS":"2"}"#;
+        let resp: ScheduleResponse = serde_json::from_str(json).expect("解析失败");
+        assert_eq!(resp.status, "2");
+        assert!(resp.result.is_none());
+    }
+
+    #[test]
+    fn schedule_status_0_parses_courses() {
+        let json = r#"{"STATUS":"0","result":[{"id":"1225229","uuid":"9788025C84A04A94874CD06F5B4130AE","courseName":"C++程序设计","teacherName":"张三","weekDay":"周四","classBeginTime":"2026-09-24 10:25:00","classEndTime":"2026-09-24 12:00:00","signStatus":"0"}]}"#;
+        let resp: ScheduleResponse = serde_json::from_str(json).expect("解析失败");
+        assert_eq!(resp.status, "0");
+        assert_eq!(resp.result.as_ref().map(|v| v.len()), Some(1));
     }
 
     #[test]

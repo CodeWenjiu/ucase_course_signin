@@ -79,8 +79,8 @@ fn draw_body(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            // 签到过程注解优先于上游原始状态
-            let (status_label, status_color) = match app.sign_note(i) {
+            // 签到过程注解优先于上游原始状态（按 courseId 定位，规避排序错位）
+            let (status_label, status_color) = match app.sign_note(&c.id) {
                 Some(note) if note.contains('✓') => (note.to_string(), Color::Green),
                 Some(note) if note.contains("重试") || note.contains("尝试") => {
                     (note.to_string(), Color::Yellow)

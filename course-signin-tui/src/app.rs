@@ -22,8 +22,10 @@ pub enum RefreshMsg {
 
 /// 一次签到尝试的结果。
 pub struct SignMsg {
-    /// 课程在时间线中的索引。
+    /// 课程在时间线中的索引（时间线排序后）。
     pub idx: usize,
+    /// 课程 id（courseSchedId），注解按它定位，避免排序错位。
+    pub course_id: String,
     /// 描述信息。
     pub text: String,
     /// 是否已签到成功。
@@ -83,8 +85,8 @@ pub struct App {
     refresh_retry_at: Option<NaiveDateTime>,
     /// 当天是否已成功拉取过课表。
     daily_success: bool,
-    /// 每门课的签到过程注解（覆盖表格状态列）。
-    sign_notes: HashMap<usize, String>,
+    /// 每门课的签到过程注解（键为 courseSchedId）。
+    sign_notes: HashMap<String, String>,
     client: Client,
     tx: mpsc::Sender<RefreshMsg>,
 }
@@ -212,8 +214,8 @@ impl App {
     }
 
     /// 课程签到过程注解（供表格状态列展示）。
-    pub fn sign_note(&self, idx: usize) -> Option<&str> {
-        self.sign_notes.get(&idx).map(String::as_str)
+    pub fn sign_note(&self, course_id: &str) -> Option<&str> {
+        self.sign_notes.get(course_id).map(String::as_str)
     }
 
     /// 启动一次签到尝试（后台任务），携带原因文案。
@@ -227,13 +229,19 @@ impl App {
 
         self.phase = SchedulerPhase::Running;
         self.status_text = reason;
-        self.sign_notes.insert(idx, "尝试签到中 ...".to_string());
+        self.sign_notes
+            .insert(course.course_id.clone(), "尝试签到中 ...".to_string());
+        crate::log::log_event(&format!(
+            "sign attempt course={} {}",
+            course.course_id, course.course_name
+        ));
 
         tokio::spawn(async move {
             let result = attempt_sign_once(&client, &course_id).await;
             let _ = tx
                 .send(RefreshMsg::Sign(SignMsg {
                     idx,
+                    course_id,
                     text: result.message.clone(),
                     signed: result.signed,
                     retrying: result.retrying,
@@ -292,7 +300,9 @@ impl App {
                     .get(idx)
                     .map(|c| c.course_name.as_str())
                     .unwrap_or("未知课程");
-                self.sign_notes.remove(&idx);
+                if let Some(course) = self.timeline.courses.get(idx) {
+                    self.sign_notes.remove(&course.course_id);
+                }
                 self.retry_at = None;
                 self.retry_course = None;
                 self.status_text = format!("〔{name}〕下课，该课任务完结");
@@ -417,19 +427,24 @@ impl App {
             .is_some_and(|c| now <= c.class_end);
 
         if msg.signed {
-            self.sign_notes.insert(msg.idx, format!("✓ {}", msg.text));
+            self.sign_notes
+                .insert(msg.course_id.clone(), format!("✓ {}", msg.text));
             self.clear_retry();
             self.status_text = format!("〔{course_name}〕{}", msg.text);
+            crate::log::log_event(&format!("sign ok course={}", msg.course_id));
         } else if still_open && msg.retrying {
             self.sign_notes
-                .insert(msg.idx, format!("重试中：{}", msg.text));
+                .insert(msg.course_id.clone(), format!("重试中：{}", msg.text));
             self.retry_at = Some(now + SIGN_RETRY_INTERVAL);
             self.retry_course = Some(msg.idx);
             self.status_text = format!("〔{course_name}〕签到未成功（{}），60s 后重试", msg.text);
+            crate::log::log_event(&format!("sign retry course={}", msg.course_id));
         } else {
-            self.sign_notes.insert(msg.idx, format!("✗ {}", msg.text));
+            self.sign_notes
+                .insert(msg.course_id.clone(), format!("✗ {}", msg.text));
             self.clear_retry();
             self.status_text = format!("〔{course_name}〕签到失败：{}", msg.text);
+            crate::log::log_event(&format!("sign fail course={}", msg.course_id));
         }
     }
 
