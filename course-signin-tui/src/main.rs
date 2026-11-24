@@ -13,10 +13,12 @@ use tokio::sync::mpsc;
 
 use crate::app::App;
 
-crate_macro::mod_pub!(app, log, ui);
+crate_macro::mod_pub!(app, log, scheduler, tasks, ui);
 
 /// 键盘事件线程轮询间隔。
 const KEYBOARD_POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// 关闭自动调度时的休眠间隔（仅用于定期检查开关状态）。
+const PAUSED_SLEEP: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -25,12 +27,12 @@ const KEYBOARD_POLL_INTERVAL: Duration = Duration::from_millis(200);
     about = "UCAS 课程签到 TUI（常驻进程）"
 )]
 struct Args {
-    /// 学号（或环境变量 UCAS_USERNAME）
-    #[arg(long, env = "UCAS_USERNAME")]
+    /// 学号
+    #[arg(long)]
     username: Option<String>,
 
-    /// 密码（或环境变量 UCAS_PASSWORD；缺省为默认密码）
-    #[arg(long, env = "UCAS_PASSWORD", default_value = DEFAULT_PASSWORD)]
+    /// 密码（缺省为 UCAS 默认密码）
+    #[arg(long, default_value = DEFAULT_PASSWORD)]
     password: String,
 }
 
@@ -51,15 +53,17 @@ async fn main() -> Result<()> {
         .username
         .clone()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("缺少学号：请用 --username 或环境变量 UCAS_USERNAME"))?;
+        .ok_or_else(|| anyhow!("缺少学号：请用 --username 指定"))?;
 
     let client = Client::with_credentials_default_base(&username, &args.password)?;
     let date = Local::now().format("%Y%m%d").to_string();
 
     let (tx, rx) = mpsc::channel(4);
-    let mut app = App::new(client, username, date, tx);
+    let mut app = App::new(username, date);
     // 启动即刷新一次，构建当天时间线
-    app.spawn_refresh();
+    if let Some(cmd) = app.refresh("启动刷新课表") {
+        tasks::execute(&client, cmd, &tx);
+    }
 
     let mut terminal = ratatui::init();
     // 启动时全量清屏一次，避免残留启动前的终端内容（之后走 diff 增量渲染）。
@@ -72,7 +76,7 @@ async fn main() -> Result<()> {
     .context("启动清屏失败")?;
     // 先渲染一帧（如“正在刷新课表”），避免启动时黑屏等待
     terminal.draw(|frame| ui::draw(frame, &app))?;
-    let result = run(&mut terminal, &mut app, rx).await;
+    let result = run(&mut terminal, &mut app, &client, &tx, rx).await;
     ratatui::restore();
     result
 }
@@ -95,62 +99,64 @@ fn spawn_input_thread() -> mpsc::UnboundedReceiver<crossterm::event::Event> {
     rx
 }
 
-/// 主循环：事件驱动的休眠（定时唤醒点 / 键盘 / 后台消息三路竞争）+ 渲染。
+/// 主循环：处理到点动作 → 睡到下一个唤醒点（期间被键盘/消息/信号唤醒）→ 重绘。
 async fn run(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    mut rx: mpsc::Receiver<app::RefreshMsg>,
+    client: &Client,
+    tx: &mpsc::Sender<tasks::TaskResult>,
+    mut rx: mpsc::Receiver<tasks::TaskResult>,
 ) -> Result<()> {
     let mut events = spawn_input_thread();
 
     loop {
         let now = Local::now().naive_local();
 
-        // 事件驱动：计算/更新下一个唤醒点，若有到点事件则执行
+        // 自动调度：连续处理所有到点动作（签到/刷新/维护）
         if app.auto_refresh {
-            app.compute_next_wakeup(now);
-            if let Some(wakeup) = app.wakeup_due(now) {
-                app.handle_wakeup(wakeup);
+            while let Some(due) = app.take_due(now) {
+                if let Some(cmd) = app.handle_due(due) {
+                    tasks::execute(client, cmd, tx);
+                }
             }
-        } else {
-            app.invalidate_wakeup();
         }
 
-        // 睡到下一个唤醒点；期间键盘与后台消息可随时打断
-        let sleep_time = app.sleep_until_next(Local::now().naive_local());
+        let sleep = if app.auto_refresh {
+            app.sleep_duration(Local::now().naive_local())
+        } else {
+            PAUSED_SLEEP
+        };
 
         tokio::select! {
-            _ = tokio::time::sleep(sleep_time) => {
-                // 唤醒：重新计算（包括跨天维护事件）
+            _ = tokio::time::sleep(sleep) => {
+                // 唤醒：重新处理到点动作
             }
             Some(ev) = events.recv() => {
                 match ev {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                            KeyCode::Char('r') => {
-                                app.invalidate_wakeup();
-                                app.spawn_refresh();
+                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('r') => {
+                            if let Some(cmd) = app.manual_refresh() {
+                                tasks::execute(client, cmd, tx);
                             }
-                            KeyCode::Char('a') => {
-                                app.auto_refresh = !app.auto_refresh;
-                                app.status_text = if app.auto_refresh {
-                                    "自动调度已开启".to_string()
-                                } else {
-                                    "自动调度已暂停（按 a 恢复）".to_string()
-                                };
-                            }
-                            _ => {}
                         }
-                    }
+                        KeyCode::Char('a') => {
+                            app.auto_refresh = !app.auto_refresh;
+                            app.status_text = if app.auto_refresh {
+                                "自动调度已开启".to_string()
+                            } else {
+                                "自动调度已暂停（按 a 恢复）".to_string()
+                            };
+                        }
+                        _ => {}
+                    },
                     // 终端尺寸变化：下面的 autoresize + draw 会按新尺寸全量重绘
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
             }
-            Some(msg) = rx.recv() => {
-                // 后台任务结果（刷新/签到）到达：立刻落地并重绘
-                app.apply(msg);
+            Some(result) = rx.recv() => {
+                app.apply(result, Local::now().naive_local());
             }
             // Ctrl+C 优雅退出（走 terminal 恢复流程）
             _ = tokio::signal::ctrl_c() => {
@@ -161,9 +167,5 @@ async fn run(
         // 以最新终端尺寸重绘（ioctl 查询，无阻塞；尺寸变化时全量重绘）
         terminal.autoresize()?;
         terminal.draw(|frame| ui::draw(frame, app))?;
-
-        if app.quit {
-            return Ok(());
-        }
     }
 }

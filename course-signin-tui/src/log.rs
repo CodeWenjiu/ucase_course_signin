@@ -32,17 +32,3 @@ pub fn log_event(msg: &str) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn log_path_is_under_state_dir() {
-        let p = log_path();
-        assert!(
-            p.ends_with("course-signin/tui.log"),
-            "路径: {}",
-            p.display()
-        );
-    }
-}

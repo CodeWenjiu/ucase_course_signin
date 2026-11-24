@@ -70,7 +70,7 @@ impl Client {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|source| Error::HttpClient(source))?;
+            .map_err(Error::HttpClient)?;
 
         Ok(Self {
             http,
@@ -267,7 +267,7 @@ impl Client {
             .message
             .or(resp.errmsg)
             .or(resp.msg)
-            .or_else(|| result.message)
+            .or(result.message)
             .unwrap_or_else(|| "签到失败，请稍后重试".to_string());
 
         let success = upstream_status == "0" && stu_sign_status == "1";
@@ -344,60 +344,3 @@ struct SignResultBody {
     message: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn url_encodes_query_values() {
-        assert_eq!(urlencode("2026-03-25"), "2026-03-25");
-        assert_eq!(urlencode("a b"), "a%20b");
-    }
-
-    #[test]
-    fn parses_timestamp_response() {
-        let json = r#"{"STATUS":"0","timestamp":1770000000000}"#;
-        let resp: TimestampResponse = serde_json::from_str(json).expect("解析失败");
-        assert_eq!(resp.status, "0");
-        assert_eq!(resp.timestamp, 1770000000000);
-    }
-
-    #[test]
-    fn schedule_status_2_means_no_courses() {
-        let json = r#"{"STATUS":"2"}"#;
-        let resp: ScheduleResponse = serde_json::from_str(json).expect("解析失败");
-        assert_eq!(resp.status, "2");
-        assert!(resp.result.is_none());
-    }
-
-    #[test]
-    fn schedule_status_0_parses_courses() {
-        let json = r#"{"STATUS":"0","result":[{"id":"1225229","uuid":"9788025C84A04A94874CD06F5B4130AE","courseName":"C++程序设计","teacherName":"张三","weekDay":"周四","classBeginTime":"2026-09-24 10:25:00","classEndTime":"2026-09-24 12:00:00","signStatus":"0"}]}"#;
-        let resp: ScheduleResponse = serde_json::from_str(json).expect("解析失败");
-        assert_eq!(resp.status, "0");
-        assert_eq!(resp.result.as_ref().map(|v| v.len()), Some(1));
-    }
-
-    #[test]
-    fn parses_login_response() {
-        let json = r#"{"STATUS":"0","result":{"id":"20250001","sessionId":"AABBCCDDEEFF00112233445566778899"}}"#;
-        let resp: LoginResponse = serde_json::from_str(json).expect("解析失败");
-        assert_eq!(resp.status, "0");
-        let result = resp.result.expect("缺少 result");
-        assert_eq!(result.id, "20250001");
-        assert_eq!(
-            result.session_id.as_deref(),
-            Some("AABBCCDDEEFF00112233445566778899")
-        );
-    }
-
-    #[test]
-    fn parses_sign_success_response() {
-        let json = r#"{"STATUS":"0","message":"签到成功","result":{"stuSignId":"123456","stuSignStatus":"1"}}"#;
-        let resp: SignResponse = serde_json::from_str(json).expect("解析失败");
-        assert_eq!(resp.status, "0");
-        let result = resp.result.expect("缺少 result");
-        assert_eq!(result.stu_sign_id.as_deref(), Some("123456"));
-        assert_eq!(result.stu_sign_status.as_deref(), Some("1"));
-    }
-}

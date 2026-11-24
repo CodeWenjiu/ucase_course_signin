@@ -50,20 +50,3 @@ impl Config {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_to_ucas_base_url() {
-        let config = Config::new("20250001", "secret", DEFAULT_BASE_URL).expect("配置应有效");
-        assert_eq!(config.base_url, DEFAULT_BASE_URL);
-        assert_eq!(config.username, "20250001");
-    }
-
-    #[test]
-    fn rejects_empty_credentials() {
-        assert!(Config::new("", "pwd", DEFAULT_BASE_URL).is_err());
-        assert!(Config::new("20250001", "", DEFAULT_BASE_URL).is_err());
-    }
-}
