@@ -1,6 +1,6 @@
 //! 运行配置：凭据与上游地址。
 
-use anyhow::{Context, Result};
+use crate::error::{Error, Result};
 
 /// 上游 iclass 服务默认地址。
 pub const DEFAULT_BASE_URL: &str = "https://iclass.ucas.edu.cn:8181";
@@ -30,10 +30,9 @@ impl Config {
         let password = password.into();
         let base_url = base_url.into();
 
-        anyhow::ensure!(
-            !username.is_empty() && !password.is_empty(),
-            "学号与密码不能为空"
-        );
+        if username.is_empty() || password.is_empty() {
+            return Err(Error::EmptyCredentials);
+        }
 
         Ok(Self {
             username,
@@ -47,7 +46,7 @@ impl Config {
         username: impl Into<String>,
         password: impl Into<String>,
     ) -> Result<Self> {
-        Self::new(username, password, DEFAULT_BASE_URL).context("配置无效")
+        Self::new(username, password, DEFAULT_BASE_URL)
     }
 }
 

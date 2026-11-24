@@ -5,11 +5,11 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
 use reqwest::header::{CONTENT_TYPE, USER_AGENT};
 use serde::Deserialize;
 
 use crate::config::DEFAULT_BASE_URL;
+use crate::error::{Error, Result};
 use crate::model::{AuthSession, Course, SignResult};
 
 /// 官方 Android App 登录接口 UA。
@@ -70,7 +70,7 @@ impl Client {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .context("构建 HTTP 客户端失败")?;
+            .map_err(|source| Error::HttpClient(source))?;
 
         Ok(Self {
             http,
@@ -82,14 +82,8 @@ impl Client {
 
     /// 发起登录，返回会话凭证。
     pub async fn login(&self) -> Result<AuthSession> {
-        let username = self
-            .username
-            .as_deref()
-            .ok_or_else(|| anyhow!("客户端未配置凭据"))?;
-        let password = self
-            .password
-            .as_deref()
-            .ok_or_else(|| anyhow!("客户端未配置凭据"))?;
+        let username = self.username.as_deref().ok_or(Error::MissingCredentials)?;
+        let password = self.password.as_deref().ok_or(Error::MissingCredentials)?;
 
         let body = [
             ("phone", username),
@@ -107,22 +101,34 @@ impl Client {
             .form(&body)
             .send()
             .await
-            .context("登录请求失败")?
+            .map_err(|source| Error::Request {
+                interface: "登录",
+                source,
+            })?
             .error_for_status()
-            .context("登录接口 HTTP 异常")?
+            .map_err(|source| Error::HttpStatus {
+                interface: "登录",
+                source,
+            })?
             .json()
             .await
-            .context("登录接口返回非 JSON")?;
+            .map_err(|source| Error::Decode {
+                interface: "登录",
+                source,
+            })?;
 
         if resp.status != "0" {
-            return Err(anyhow!("登录失败：STATUS={}", resp.status));
+            return Err(Error::UnexpectedStatus {
+                interface: "登录",
+                status: resp.status,
+            });
         }
 
-        let result = resp.result.ok_or_else(|| anyhow!("登录响应缺少 result"))?;
+        let result = resp.result.ok_or(Error::MissingLoginResult)?;
         let session_id = result
             .session_id
             .filter(|s| s.len() == 32)
-            .ok_or_else(|| anyhow!("登录响应缺少合法 sessionId"))?;
+            .ok_or(Error::InvalidSessionId)?;
 
         Ok(AuthSession {
             user_id: result.id,
@@ -142,15 +148,27 @@ impl Client {
             .header("Connection", "Keep-Alive")
             .send()
             .await
-            .context("时间戳请求失败")?
+            .map_err(|source| Error::Request {
+                interface: "时间戳",
+                source,
+            })?
             .error_for_status()
-            .context("时间戳接口 HTTP 异常")?
+            .map_err(|source| Error::HttpStatus {
+                interface: "时间戳",
+                source,
+            })?
             .json()
             .await
-            .context("时间戳接口返回非 JSON")?;
+            .map_err(|source| Error::Decode {
+                interface: "时间戳",
+                source,
+            })?;
 
         if resp.status != "0" {
-            return Err(anyhow!("时间戳接口 STATUS={}", resp.status));
+            return Err(Error::UnexpectedStatus {
+                interface: "时间戳",
+                status: resp.status,
+            });
         }
 
         Ok(resp.timestamp)
@@ -172,21 +190,31 @@ impl Client {
             .header(USER_AGENT, API_UA)
             .send()
             .await
-            .context("课表请求失败")?
+            .map_err(|source| Error::Request {
+                interface: "课表",
+                source,
+            })?
             .error_for_status()
-            .context("课表接口 HTTP 异常")?
+            .map_err(|source| Error::HttpStatus {
+                interface: "课表",
+                source,
+            })?
             .json()
             .await
-            .context("课表接口返回非 JSON")?;
+            .map_err(|source| Error::Decode {
+                interface: "课表",
+                source,
+            })?;
 
         match resp.status.as_str() {
             // 0：有课表数据
             "0" => Ok(resp.result.unwrap_or_default()),
             // 2：当天无课表（上游语义），视为合法的空课表
             "2" => Ok(Vec::new()),
-            other => Err(anyhow!(
-                "课表查询失败：STATUS={other}（已知值：0=有课，2=当天无课）"
-            )),
+            other => Err(Error::UnexpectedStatus {
+                interface: "课表",
+                status: other.to_string(),
+            }),
         }
     }
 
@@ -215,12 +243,21 @@ impl Client {
             .header(USER_AGENT, API_UA)
             .send()
             .await
-            .context("签到请求失败")?
+            .map_err(|source| Error::Request {
+                interface: "签到",
+                source,
+            })?
             .error_for_status()
-            .context("签到接口 HTTP 异常")?
+            .map_err(|source| Error::HttpStatus {
+                interface: "签到",
+                source,
+            })?
             .json()
             .await
-            .context("签到接口返回非 JSON")?;
+            .map_err(|source| Error::Decode {
+                interface: "签到",
+                source,
+            })?;
 
         let upstream_status = resp.status;
         let result = resp.result.unwrap_or_default();
@@ -251,8 +288,8 @@ impl Client {
 
 /// 生成 0..1_000_000 的随机数（用于构造防缓存的随机查询参数）。
 fn rand_id() -> u64 {
-    use rand::Rng;
-    rand::thread_rng().gen_range(0..1_000_000)
+    use rand::RngExt;
+    rand::rng().random_range(0..1_000_000)
 }
 
 /// URL 编码（空格 → %20）。

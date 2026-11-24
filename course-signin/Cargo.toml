@@ -5,10 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow.workspace = true
 chrono.workspace = true
 crate-macro.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true

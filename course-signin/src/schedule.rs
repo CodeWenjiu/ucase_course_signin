@@ -18,8 +18,8 @@ pub const MAINTENANCE_MINUTE: u32 = 5;
 
 /// 生成随机的签到提前量（1..=5 分钟）。
 fn random_lead_minutes() -> i64 {
-    use rand::Rng;
-    rand::thread_rng().gen_range(SIGN_WINDOW_MIN_LEAD_MINUTES..=SIGN_WINDOW_MAX_LEAD_MINUTES)
+    use rand::RngExt;
+    rand::rng().random_range(SIGN_WINDOW_MIN_LEAD_MINUTES..=SIGN_WINDOW_MAX_LEAD_MINUTES)
 }
 
 /// 单个课程签到任务的完整时间线。

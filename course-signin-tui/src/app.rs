@@ -358,11 +358,11 @@ impl App {
 
         tokio::spawn(async move {
             let result: Result<Vec<Course>, String> = async {
-                let session = client.login().await.map_err(|e| format!("{e:#}"))?;
+                let session = client.login().await.map_err(|e| format!("{:#}", anyhow::Error::new(e)))?;
                 client
                     .get_schedule(&session, &date)
                     .await
-                    .map_err(|e| format!("{e:#}"))
+                    .map_err(|e| format!("{:#}", anyhow::Error::new(e)))
             }
             .await;
 
@@ -457,16 +457,16 @@ impl App {
 /// 一次完整的签到尝试：登录 → 服务器时间校准 → 直接签到。
 async fn attempt_sign_once(client: &Client, course_id: &str) -> SignAttemptResult {
     let result: Result<SignResult, String> = async {
-        let session = client.login().await.map_err(|e| format!("{e:#}"))?;
+        let session = client.login().await.map_err(|e| format!("{:#}", anyhow::Error::new(e)))?;
         let server_ts = client
             .server_timestamp()
             .await
-            .map_err(|e| format!("{e:#}"))?;
+            .map_err(|e| format!("{:#}", anyhow::Error::new(e)))?;
         let ts = sign_timestamp(server_ts);
         client
             .scan_sign(&session, course_id, ts)
             .await
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| format!("{:#}", anyhow::Error::new(e)))
     }
     .await;
 
